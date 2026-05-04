@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$email]);
                 $row = $stmt->fetch();
                 if ($row && strtolower($row['security_answer']) === strtolower($answer)) {
-                    // تحقق من قوة كلمة السر
+                    // Check the strength of your password
                     $strong = "/^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*]).{8,}$/";
                     if (!preg_match($strong, $new_password)) {
                         $errors[] = 'كلمة السر الجديدة ضعيفة. يجب أن تحتوي على 8 أحرف على الأقل، حرف كبير وصغير، رقم ورمز.';
@@ -76,7 +76,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $step = 2;
             }
         }
-        // إعادة السؤال في الخطوة 2
+        // Repeat the question in step 2
         if ($step == 2) {
             $stmt = $pdo->prepare('SELECT security_question FROM users WHERE email = ?');
             $stmt->execute([$email]);

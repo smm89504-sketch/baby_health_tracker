@@ -19,7 +19,7 @@ $email = '';
 $phone = '';
 $security_question = '';
 $security_answer = '';
-$user_type = 'parent'; // القيمة الافتراضية
+$user_type = 'parent'; //default value
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $full_name = trim($_POST['full_name'] ?? '');
@@ -65,7 +65,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 $hashed_password = password_hash($password, PASSWORD_DEFAULT);
                 
-                // **تم تعديل الاستعلام لإضافة user_type**
+                // ** user_type **
                 $stmt = $pdo->prepare('INSERT INTO users (full_name, email, phone, password, security_question, security_answer, user_type) VALUES (?, ?, ?, ?, ?, ?, ?)');
                 $stmt->execute([
                     $full_name,

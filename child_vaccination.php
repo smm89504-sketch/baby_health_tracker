@@ -24,7 +24,7 @@ $edit_record = null;
 $user_type = $_SESSION['user_type'] ?? 'nurse';
 $full_name = htmlspecialchars($_SESSION['full_name'] ?? 'مستخدم'); 
 
-// التأكد من وجود مجلد رفع الشهادات
+// Make sure there is a folder for uploading certificates.الشهادات
 if (!is_dir('uploads/vaccine_certs')) {
     mkdir('uploads/vaccine_certs', 0777, true);
 }
@@ -38,7 +38,7 @@ if (!$child_id) {
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
     
-    // جلب بيانات الطفل
+    // Retrieve child data
     $stmt_child = $pdo->prepare('SELECT id, name, birth_date FROM children WHERE id = ?');
     $stmt_child->execute([$child_id]);
     $child_data = $stmt_child->fetch();
@@ -47,11 +47,11 @@ try {
         exit;
     }
     
-    // جلب قائمة اللقاحات المعيارية
+    // Bring the standard vaccine list
     $stmt_list = $pdo->query('SELECT * FROM vaccines ORDER BY target_age ASC');
     $vaccines_list = $stmt_list->fetchAll();
 
-    // جلب سجل التطعيم للتعديل
+    // Bring the vaccination record for editing
     if ($edit_id) {
         $stmt_edit = $pdo->prepare('SELECT * FROM child_vaccines WHERE id = ? AND child_id = ?');
         $stmt_edit->execute([$edit_id, $child_id]);
@@ -62,7 +62,7 @@ try {
         }
     }
 
-    // معالجة الإضافة/التعديل
+    // Add/Modify Handling
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $vaccine_id = $_POST['vaccine_id'] ?? null;
         $due_date = $_POST['due_date'] ?? null;
@@ -73,7 +73,7 @@ try {
         
         $certificate_filename = $edit_record['certificate_filename'] ?? null; 
 
-        // المنطق الجديد لحالة اللقاح
+        //The new logic of the vaccine case
         $administered_date_db = empty($administered_date) ? null : $administered_date;
 
         if ($administered_date_db) {
@@ -85,7 +85,7 @@ try {
                 $status = 'due';
             }
         }
-        // نهاية المنطق الجديد
+        // The end of the new logic
 
         if (!$vaccine_id || !$due_date) {
             $errors[] = 'اللقاح وتاريخ الاستحقاق مطلوبان.';
@@ -145,7 +145,7 @@ try {
         }
     }
     
-    // جلب سجلات التطعيم للطفل
+    // Bring the child's vaccination records
     $stmt_child_vaccines = $pdo->prepare("SELECT cv.*, v.name as vaccine_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id WHERE cv.child_id = ? ORDER BY cv.due_date ASC");
     $stmt_child_vaccines->execute([$child_id]);
     $child_vaccines = $stmt_child_vaccines->fetchAll();

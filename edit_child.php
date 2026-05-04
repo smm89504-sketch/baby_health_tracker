@@ -7,7 +7,7 @@ if (!isset($_SESSION['user_id'])) {
 $host = 'localhost';
 $db   = 'baby_tracker';
 $user = 'root';
-$pass = ''; // كلمة المرور الخاصة بك
+$pass = ''; //Your password
 $charset = 'utf8mb4';
 $dsn = "mysql:host=$host;dbname=$db;charset=$charset";
 $options = [
@@ -20,7 +20,7 @@ $success = false;
 $child_id_for_form_action = $_GET['id'] ?? null; // تم تغيير الاسم لتمييزه عن $id المستخدم لاحقاً داخل POST
 
 if (!$child_id_for_form_action) {
-    header('Location: children.php'); // أو manage_children.php حسب اسم ملفك
+    header('Location: children.php'); 
     exit;
 }
 
@@ -73,7 +73,7 @@ function get_parent_alerts($due_vaccines) {
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
     
-    // جلب معلومات التطعيمات للأطفال (لأجل تنبيهات الشريط الجانبي)
+    // Retrieve vaccination information for children (for sidebar alerts)
     $due_vaccines = [];
     if ($user_type === 'parent') {
         $stmt_vaccines_sidebar = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
@@ -83,8 +83,17 @@ try {
     $vaccine_alerts_sidebar = $user_type === 'parent' ? get_parent_alerts($due_vaccines) : ['upcoming' => [], 'missed' => []];
 
 
-    $stmt = $pdo->prepare('SELECT * FROM children WHERE id = ? AND user_id = ?');
-    $stmt->execute([$child_id_for_form_action, $_SESSION['user_id']]);
+    //Allowing doctors and nurses access to all children, and parents to their children only.
+    $query = 'SELECT * FROM children WHERE id = ?';
+    $params = [$child_id_for_form_action];
+    
+    if ($user_type === 'parent') {
+        $query .= ' AND user_id = ?';
+        $params[] = $_SESSION['user_id'];
+    }
+    
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
     $child = $stmt->fetch();
     if (!$child) {
         header('Location: children.php'); // أو manage_children.php
@@ -100,6 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $name = trim($_POST['name'] ?? '');
     $birth_date = $_POST['birth_date'] ?? '';
+    $twin_group = trim($_POST['twin_group'] ?? '');
     $age = trim($_POST['age'] ?? '');
     $weight = trim($_POST['weight'] ?? '');
     $height = trim($_POST['height'] ?? '');
@@ -120,30 +130,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!isset($pdo)) {
                  $pdo = new PDO($dsn, $user, $pass, $options);
             }
-            $stmt = $pdo->prepare('UPDATE children SET name = ?, birth_date = ?, age = ?, weight = ?, height = ? WHERE id = ? AND user_id = ?');
+            $stmt = $pdo->prepare('UPDATE children SET name = ?, birth_date = ?, age = ?, weight = ?, height = ?, twin_group = ? WHERE id = ? AND user_id = ?');
             $stmt->execute([
                 $name,
                 $birth_date,
                 $age,
                 $weight,
                 $height,
+                $twin_group ?: null,
                 $id_from_post, // استخدام المعرف الصحيح هنا
                 $_SESSION['user_id']
             ]);
             $success = true;
-            // تحديث بيانات الطفل للعرض الفوري بعد التعديل
+            // Update child data for immediate viewing after modification
             $child['name'] = $name;
             $child['birth_date'] = $birth_date;
             $child['age'] = $age;
             $child['weight'] = $weight;
             $child['height'] = $height;
+            $child['twin_group'] = $twin_group;
         } catch (PDOException $e) {
             $errors[] = 'حدث خطأ أثناء تحديث البيانات: ' . $e->getMessage();
         }
     }
 }
 
-// متغير مسار الصورة الافتراضية الجديدة
+// New default image path variable
 $default_child_image = 'images/images.jpeg'; 
 ?>
 <!DOCTYPE html>
@@ -295,6 +307,11 @@ $default_child_image = 'images/images.jpeg';
                                 <div class="col-md-6 mb-3">
                                     <label for="birth_date" class="form-label">تاريخ الميلاد</label>
                                     <input type="date" name="birth_date" id="birth_date" class="form-control" value="<?= htmlspecialchars($child['birth_date']) ?>" required>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="twin_group" class="form-label">مجموعة التوائم (اختياري)</label>
+                                    <input type="text" name="twin_group" id="twin_group" class="form-control" value="<?= htmlspecialchars($child['twin_group'] ?? '') ?>" placeholder="مثلاً: TWINS-001">
+                                    <small class="form-text text-muted">استخدم نفس الكود للتوائم حتى تظهر المقارنة بدقة.</small>
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label for="age" class="form-label">العمر</label>

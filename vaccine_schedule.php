@@ -43,7 +43,7 @@ if ($user_type === 'doctor') {
     $bg_light = '#fff0f5';
     $title_icon = 'fas fa-heartbeat';
 }
-// لا توجد تنبيهات تطعيم في صفحة الممرض هذه
+// There are no vaccination alerts on this nurse page.
 $vaccine_alerts = ['upcoming' => [], 'missed' => []];
 
 // === END Sidebar Setup ===
@@ -51,7 +51,7 @@ $vaccine_alerts = ['upcoming' => [], 'missed' => []];
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
 
-    // معالجة الحذف
+    // Deletion processing
     if (isset($_GET['delete'])) {
         $delete_id = filter_var($_GET['delete'], FILTER_VALIDATE_INT);
         if ($delete_id) {
@@ -63,7 +63,7 @@ try {
         }
     }
     
-    // جلب لقاح للتعديل
+    // Bringing a vaccine for modification
     if ($edit_id) {
         $stmt = $pdo->prepare('SELECT * FROM vaccines WHERE id = ?');
         $stmt->execute([$edit_id]);
@@ -74,7 +74,7 @@ try {
         }
     }
 
-    // معالجة الإضافة/التعديل
+    //Add/Modify Handling
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name = trim($_POST['name'] ?? '');
         $target_age = trim($_POST['target_age'] ?? '');
@@ -86,11 +86,11 @@ try {
         }
 
         if (empty($errors)) {
-            if ($id_to_save) { // تعديل
+            if ($id_to_save) { // Edit
                 $stmt = $pdo->prepare('UPDATE vaccines SET name = ?, target_age = ?, description = ? WHERE id = ?');
                 $stmt->execute([$name, $target_age, $description, $id_to_save]);
                 $success = 'تم تعديل اللقاح بنجاح.';
-            } else { // إضافة
+            } else { // Add
                 $stmt = $pdo->prepare('INSERT INTO vaccines (name, target_age, description) VALUES (?, ?, ?)');
                 $stmt->execute([$name, $target_age, $description]);
                 $success = 'تم إضافة اللقاح بنجاح.';
@@ -100,7 +100,7 @@ try {
         }
     }
 
-    // جلب جميع اللقاحات
+    // Bring all the vaccines
     $stmt = $pdo->query('SELECT * FROM vaccines ORDER BY target_age ASC');
     $vaccines = $stmt->fetchAll();
 

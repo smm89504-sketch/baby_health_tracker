@@ -31,7 +31,7 @@ $main_deep = '#f8bbd0';
 $bg_light = '#fff0f5';
 $title_icon = 'fas fa-heartbeat';
 
-// دالة لمعالجة إشعارات التطعيم (مطلوبة للجانب الأيمن)
+// Function to handle vaccination notifications (required for the right side)
 function get_parent_alerts($due_vaccines) {
     $alerts = ['upcoming' => [], 'missed' => []];
     $today = new DateTime();
@@ -53,7 +53,7 @@ function get_parent_alerts($due_vaccines) {
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
     
-    // جلب معلومات التطعيمات للأطفال (لأجل تنبيهات الشريط الجانبي)
+    // Retrieve vaccination information for children (for sidebar alerts)
     $due_vaccines = [];
     if ($user_type === 'parent') {
         $stmt_vaccines_sidebar = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
@@ -62,24 +62,24 @@ try {
     }
     $vaccine_alerts_sidebar = $user_type === 'parent' ? get_parent_alerts($due_vaccines) : ['upcoming' => [], 'missed' => []];
 
-    // جلب قائمة الأطفال المؤرشفين (is_archived = 1)
+    // جلب archived children's list (is_archived = 1)
     $sql = 'SELECT * FROM children ';
     $params = [];
     $where_clauses = ['is_archived = 1']; 
 
-    // تصفية حسب الدور
+    // filtar حسب Validity الصلاحية
     if ($user_type === 'parent') {
         $where_clauses[] = 'user_id = ?';
         $params[] = $_SESSION['user_id'];
     }
     
-    // إضافة البحث
+    // Add search
     if ($search_term) {
         $where_clauses[] = 'name LIKE ?';
         $params[] = '%' . $search_term . '%';
     }
     
-    // ربط الشروط
+    // condation jon
     if (!empty($where_clauses)) {
         $sql .= 'WHERE ' . implode(' AND ', $where_clauses) . ' ';
     }

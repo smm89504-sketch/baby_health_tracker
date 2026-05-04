@@ -1,6 +1,6 @@
 <?php
 session_start();
-// التأكد من أن المستخدم ممرض
+// تأكدEnsuring the user is a nurse
 if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'nurse') {
     header('Location: login.php');
     exit;
@@ -26,7 +26,7 @@ if (!$child_id) {
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
     
-    // جلب اسم الطفل
+    //Bring the child's name
     $stmt_child = $pdo->prepare('SELECT name FROM children WHERE id = ?');
     $stmt_child->execute([$child_id]);
     $child_data = $stmt_child->fetch();

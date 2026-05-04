@@ -42,7 +42,7 @@ try {
     $errors[] = 'خطأ في الاتصال بقاعدة البيانات: ' . $e->getMessage();
 }
 
-// إضافة سجل نمو جديد
+// Add a new growth record
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_growth'])) {
     $child_id_form = $_POST['child_id'] ?? '';
     $date = $_POST['date'] ?? date('Y-m-d');

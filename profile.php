@@ -22,7 +22,7 @@ $userData = [];
 $user_type = $_SESSION['user_type'] ?? 'parent';
 $dashboard_link = $user_type === 'doctor' ? 'doctor_dashboard.php' : ($user_type === 'nurse' ? 'nurse_dashboard.php' : 'profile.php');
 
-// تحديد الألوان بناءً على الدور
+// Color selection based on role
 if ($user_type === 'doctor') {
     $main_dark = '#842029'; // dark red/maroon
     $main_text = '#dc3545'; // red
@@ -52,7 +52,7 @@ try {
     $stmt->execute([$_SESSION['user_id']]);
     $userData = $stmt->fetch();
     
-    // جلب معلومات التطعيمات للأطفال (فقط إذا كان المستخدم أهلاً)
+    // Retrieve vaccination information for children (only if the user is eligible)
     $due_vaccines = [];
     if ($user_type === 'parent') {
         $stmt_vaccines = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
@@ -64,7 +64,7 @@ try {
     $errors[] = 'خطأ في الاتصال بقاعدة البيانات.';
 }
 
-// دالة لمعالجة إشعارات التطعيم
+//A function for processing vaccination notifications
 function get_parent_alerts($due_vaccines) {
     $alerts = ['upcoming' => [], 'missed' => []];
     $today = new DateTime();
@@ -83,7 +83,7 @@ function get_parent_alerts($due_vaccines) {
 $vaccine_alerts = $user_type === 'parent' ? get_parent_alerts($due_vaccines) : ['upcoming' => [], 'missed' => []];
 
 
-// تحديث البيانات
+// Data update
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
     $full_name = trim($_POST['full_name'] ?? '');
     $phone = trim($_POST['phone'] ?? '');
@@ -99,7 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_profile'])) {
             $stmt->execute([$full_name, $phone, $_SESSION['user_id']]);
             $success = true;
             $_SESSION['full_name'] = $full_name;
-            // تحديث البيانات المعروضة
+            // Update displayed data
             $userData['full_name'] = $full_name;
             $userData['phone'] = $phone;
         } catch (PDOException $e) {

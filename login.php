@@ -36,8 +36,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['full_name'] = $user_record['full_name'];
                 $_SESSION['user_type'] = $user_record['user_type']; 
 
+                $user_type = $user_record['user_type'] ?? '';
+
+//Specify the page to be redirected to
+switch($user_type) {
+    case 'parent':
+        header('Location: profile.php');
+        break;
+    case 'nurse':
+        header('Location: nurse_dashboard.php');
+        break;
+    case 'doctor':
+        header('Location: doctor/index.php');
+        break;
+    case 'admin':
+        header('Location: admin/index.php');
+        break;
+         default:
+        header('Location: index.php');
+   
+}
                 // منطق التوجيه المعدل: توجيه جميع الأدوار إلى صفحة الملف الشخصي (profile.php)
-                header('Location: profile.php'); 
+                // header('Location: profile.php'); 
                 exit;
             } else {
                 $errors[] = 'بيانات الدخول غير صحيحة. الرجاء التأكد من البريد الإلكتروني أو كلمة السر.';

@@ -1,24 +1,12 @@
 <?php
-session_start();
-if (!isset($_SESSION['user_id'])) {
-    header('Location: login.php');
-    exit;
-}
-$host = 'localhost';
-$db   = 'baby_tracker';
-$user = 'root';
-$pass = '';
-$charset = 'utf8mb4';
-$dsn = "mysql:host=$host;dbname=$db;charset=$charset";
-$options = [
-    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    PDO::ATTR_EMULATE_PREPARES   => false,
-];
-$errors = [];
-$providers = [];
-$search_term = $_GET['search'] ?? '';
+require_once 'includes/check_auth.php';
+require_once 'includes/db_config.php';
+$db = new DatabaseHelper();
+$conn = $db->getConnection();
+
+$search_term = trim($_GET['search'] ?? '');
 $filter_type = $_GET['filter_type'] ?? 'all';
+$location_search = trim($_GET['location'] ?? '');
 
 $user_type = $_SESSION['user_type'] ?? 'parent';
 // === START Sidebar Setup (Color and Links) ===
@@ -47,7 +35,7 @@ if ($user_type === 'doctor') {
     $title_icon = 'fas fa-heartbeat';
 }
 
-// دالة لمعالجة إشعارات التطعيم (مطلوبة للجانب الأيمن)
+// Function to handle vaccination notifications (required for the right side)
 function get_parent_alerts($due_vaccines) {
     $alerts = ['upcoming' => [], 'missed' => []];
     $today = new DateTime();
@@ -66,42 +54,68 @@ function get_parent_alerts($due_vaccines) {
 }
 // === END Sidebar Setup ===
 
-try {
-    $pdo = new PDO($dsn, $user, $pass, $options);
-    
-    // جلب معلومات التطعيمات للأطفال (لأجل تنبيهات الشريط الجانبي)
+$session_valid = !empty($_SESSION['user_id']);
+$vaccine_alerts = ['upcoming' => [], 'missed' => []];
+$unread_messages = 0;
+
+if ($session_valid) {
+    try {
+        //Retrieve vaccination information for children (for sidebar alerts)
     $due_vaccines = [];
     if ($user_type === 'parent') {
-        $stmt_vaccines_sidebar = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
-        $stmt_vaccines_sidebar->execute([$_SESSION['user_id']]);
-        $due_vaccines = $stmt_vaccines_sidebar->fetchAll();
+        $stmt_vaccines_sidebar = $conn->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
+        $stmt_vaccines_sidebar->bind_param('i', $_SESSION['user_id']);
+        $stmt_vaccines_sidebar->execute();
+        $result = $stmt_vaccines_sidebar->get_result();
+        $due_vaccines = $result->fetch_all(MYSQLI_ASSOC);
     }
     $vaccine_alerts = $user_type === 'parent' ? get_parent_alerts($due_vaccines) : ['upcoming' => [], 'missed' => []];
 
-    
-    $sql = 'SELECT * FROM users WHERE user_type IN ("doctor", "nurse") '; 
+    // Number of unread messages for the parent (notification counter in the list)
+    $unread_messages = 0;
+    if ($user_type === 'parent') {
+        $stmt_unread = $conn->prepare('SELECT COUNT(*) as unread FROM messages WHERE recipient_id = ? AND status = "pending"');
+        $stmt_unread->bind_param('i', $_SESSION['user_id']);
+        $stmt_unread->execute();
+        $result = $stmt_unread->get_result();
+        $row = $result->fetch_assoc();
+        $unread_messages = (int) $row['unread'];
+    }
+
     $params = [];
-    
-    // MODIFICATION: Adjust filter_type logic for sidebar links
+    $types = '';
+    $sql = 'SELECT * FROM users WHERE user_type IN ("doctor", "nurse") ';
+
     if ($filter_type !== 'all' && ($filter_type === 'doctor' || $filter_type === 'nurse')) {
         $sql .= 'AND user_type = ? ';
         $params[] = $filter_type;
-    } elseif ($filter_type !== 'all') {
-        // إذا لم يتم تحديد نوع فلتر صالح، إظهار الكل كافتراضي
+        $types .= 's';
     }
-    
+
     if ($search_term) {
         $sql .= 'AND full_name LIKE ? ';
         $params[] = '%' . $search_term . '%';
+        $types .= 's';
     }
-    
+
+    if ($location_search) {
+        $sql .= 'AND location LIKE ? ';
+        $params[] = '%' . $location_search . '%';
+        $types .= 's';
+    }
+
     $sql .= 'ORDER BY full_name ASC';
-    
-    $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
-    $providers = $stmt->fetchAll();
-} catch (PDOException $e) {
-    $errors[] = 'خطأ في الاتصال بقاعدة البيانات: ' . $e->getMessage();
+
+    $stmt = $conn->prepare($sql);
+    if (!empty($params)) {
+        $stmt->bind_param($types, ...$params);
+    }
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $providers = $result->fetch_all(MYSQLI_ASSOC);
+    } catch (Exception $e) {
+        $errors[] = 'خطأ في الاتصال بقاعدة البيانات: ' . $e->getMessage();
+    }
 }
 
 ?>
@@ -162,8 +176,11 @@ try {
                 
                 <form method="GET" action="providers.php" class="mb-4">
                     <div class="row g-2">
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <input type="text" name="search" class="form-control" placeholder="البحث بالاسم..." value="<?= htmlspecialchars($search_term) ?>">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="text" name="location" class="form-control" placeholder="البحث بالموقع (مثل المدينة)..." value="<?= htmlspecialchars($location_search) ?>">
                         </div>
                         <div class="col-md-4">
                             <select name="filter_type" class="form-select">
@@ -174,10 +191,15 @@ try {
                         </div>
                         <div class="col-md-3 d-flex gap-2">
                             <button class="btn btn-primary w-100" type="submit"><i class="bi bi-search"></i> بحث</button>
-                            <?php if ($search_term || $filter_type !== 'all'): ?>
+                            <?php if ($search_term || $location_search || $filter_type !== 'all'): ?>
                                 <a href="providers.php" class="btn btn-outline-danger"><i class="bi bi-x"></i></a>
                             <?php endif; ?>
                         </div>
+                        <?php if ($user_type === 'parent'): ?>
+                            <div class="col-md-3">
+                                <a href="my_appointments.php" class="btn btn-info w-100"><i class="bi bi-calendar-check"></i> مواعيدي السابقة</a>
+                            </div>
+                        <?php endif; ?>
                     </div>
                 </form>
 
@@ -203,6 +225,13 @@ try {
                                         <div class="mb-1"><i class="bi bi-envelope"></i> <?= htmlspecialchars($prov['email']) ?></div>
                                         <?php if (!empty($prov['phone'])): ?>
                                             <div class="mb-1"><i class="bi bi-telephone"></i> <?= htmlspecialchars($prov['phone']) ?></div>
+                                        <?php endif; ?>
+                                        <?php if (!empty($prov['location'])): ?>
+                                            <div class="mb-1"><i class="bi bi-geo-alt"></i> <?= htmlspecialchars($prov['location']) ?></div>
+                                        <?php endif; ?>
+                                        <?php if ($user_type === 'parent' && $prov['user_type'] === 'doctor'): ?>
+                                            <a href="book_appointment.php?doctor_id=<?= $prov['id'] ?>" class="btn btn-sm btn-success mt-2"><i class="bi bi-calendar-plus"></i> حجز موعد</a>
+                                            <a href="messages.php?doctor_id=<?= $prov['id'] ?>" class="btn btn-sm btn-outline-primary mt-2 ms-2">ابدأ الدردشة مع الطبيب</a>
                                         <?php endif; ?>
                                     </div>
                                 </div>

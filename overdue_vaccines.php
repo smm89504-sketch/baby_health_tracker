@@ -1,6 +1,6 @@
 <?php
 session_start();
-if (!isset($_SESSION['user_id']) || $_SESSION['user_type'] !== 'nurse') {
+if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_type'], ['nurse','admin','doctor'])) {
     header('Location: login.php');
     exit;
 }
@@ -44,7 +44,7 @@ if ($user_type === 'doctor') {
     $bg_light = '#fff0f5';
     $title_icon = 'fas fa-heartbeat';
 }
-// لا توجد تنبيهات تطعيم في صفحة الممرض هذه
+// There are no vaccination alerts on this nurse page.
 $vaccine_alerts = ['upcoming' => [], 'missed' => []];
 
 // === END Sidebar Setup ===
@@ -154,6 +154,7 @@ try {
                                     <td><span class="badge bg-danger"><?= htmlspecialchars($child['due_date']) ?></span></td>
                                     <td>
                                         <a href="child_vaccination.php?child_id=<?= $child['child_id'] ?>&edit_id=<?= $child['record_id'] ?>" class="btn btn-sm btn-info text-white"><i class="bi bi-pencil"></i> تحديث</a>
+                                        <button onclick="sendNotify(<?= $child['record_id'] ?>)" class="btn btn-sm btn-warning text-white"><i class="bi bi-bell-fill"></i> إشعار</button>
                                     </td>
                                 </tr>
                             <?php endforeach; ?>
@@ -166,5 +167,26 @@ try {
     </div>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+function sendNotify(recordId) {
+    if (!confirm('هل تريد إرسال إشعار للوالدين؟')) return;
+    fetch('admin_handler.php', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action:'notify_overdue', record_id: recordId})
+    }).then(r=>r.json()).then(d=>{
+        if (d.success) {
+            alert('تم إرسال الإشعار بنجاح');
+        } else {
+            alert('فشل الإرسال: ' + (d.message||'')); 
+        }
+    }).catch(e=>{
+        console.error(e);
+        alert('حدث خطأ في الاتصال');
+    });
+}
+</script>
 </body>
 </html>

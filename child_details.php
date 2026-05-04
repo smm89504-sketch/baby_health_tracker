@@ -19,6 +19,15 @@ $errors = [];
 $child_id = $_GET['id'] ?? null;
 $user_type = $_SESSION['user_type'] ?? 'parent';
 
+// Defensive defaults
+$daily_activities = [];
+$latest_activity = null;
+$growth_records = [];
+$sleep_records = [];
+$professional_notes = [];
+$vaccine_status = [];
+$nutrition_guideline = null;
+
 if (!$child_id) {
     header('Location: children.php');
     exit;
@@ -50,6 +59,19 @@ if ($user_type === 'doctor') {
     $title_icon = 'fas fa-heartbeat';
 }
 // === END Sidebar Setup ===
+
+// === START Base Path Setup ===
+$base_path = '';
+if ($user_type === 'doctor') {
+    $base_path = 'doctor/';
+} elseif ($user_type === 'admin') {
+    $base_path = 'admin/';
+} elseif ($user_type === 'nurse') {
+    $base_path = 'nurse/';
+} elseif ($user_type === 'parent') {
+    $base_path = '/';
+}
+// === END Base Path Setup ===
 
 // دالة لمعالجة إشعارات التطعيم (مطلوبة للجانب الأيمن)
 function get_parent_alerts($due_vaccines) {
@@ -97,6 +119,45 @@ try {
         exit;
     }
 
+    // حساب عمر الطفل بالأشهر للحصول على نظام التغذية المناسب
+    $child_age_months = null;
+    if (!empty($child['birth_date'])) {
+        $birth_date_obj = new DateTime($child['birth_date']);
+        $now = new DateTime();
+        $interval = $birth_date_obj->diff($now);
+        $child_age_months = $interval->y * 12 + $interval->m;
+    }
+
+    $nutrition_guideline = null;
+    if ($child_age_months !== null) {
+        $stmt_nutrition = $pdo->prepare('SELECT * FROM nutrition_guidelines WHERE age_min_months <= ? AND age_max_months >= ? ORDER BY age_min_months DESC LIMIT 1');
+        $stmt_nutrition->execute([$child_age_months, $child_age_months]);
+        $nutrition_guideline = $stmt_nutrition->fetch();
+
+        $existing_guideline_id = $child['nutrition_guideline_id'] ?? null;
+        if ($nutrition_guideline && $existing_guideline_id != $nutrition_guideline['id']) {
+            // تحديث حالة التغذية للطفل
+            $stmt_update = $pdo->prepare('UPDATE children SET nutrition_guideline_id = ? WHERE id = ?');
+            $stmt_update->execute([$nutrition_guideline['id'], $child_id]);
+
+            // إرسال إشعار للوالد عند الانتقال لنظام تغذية جديد
+            if ($user_type === 'parent') {
+                $notif_title = 'تحديث خطة التغذية للطفل ' . $child['name'];
+                $notif_message = 'الطفل الآن بعمر ' . $child_age_months . ' شهراً. تم تحديث نظام التغذية إلى الفئة الجديدة.';
+                $notif_stmt = $pdo->prepare('INSERT INTO notifications (user_id, title, message, type) VALUES (?, ?, ?, ?)');
+                $notif_stmt->execute([$_SESSION['user_id'], $notif_title, $notif_message, 'info']);
+            }
+        }
+        // جلب قائمة الأدوية المسموحة والممنوعة حسب الفئة العمرية
+        $stmt_age_meds = $pdo->prepare('SELECT * FROM age_group_medication_lists WHERE age_min_months <= ? AND age_max_months >= ? ORDER BY age_min_months DESC LIMIT 1');
+        $stmt_age_meds->execute([$child_age_months, $child_age_months]);
+        $age_group_meds = $stmt_age_meds->fetch();
+    }
+        // جلب تذكيرات الأدوية لهذا الطفل
+        $stmt_med_reminders = $pdo->prepare('SELECT * FROM child_medication_reminders WHERE child_id = ? ORDER BY reminder_time ASC');
+        $stmt_med_reminders->execute([$child_id]);
+        $medication_reminders = $stmt_med_reminders->fetchAll();
+
     // جلب سجلات الأنشطة اليومية
     $stmt_activities = $pdo->prepare('SELECT * FROM daily_activities WHERE child_id = ? ORDER BY date DESC, created_at DESC');
     $stmt_activities->execute([$child_id]);
@@ -117,6 +178,58 @@ try {
     $stmt_sleep->execute([$child_id]);
     $sleep_records = $stmt_sleep->fetchAll();
 
+    // جلب الوصفات الطبية
+    $stmt_prescriptions = $pdo->prepare("
+        SELECT 
+            p.id,
+            p.doctor_id,
+            u.full_name as doctor_name,
+            p.prescription_date,
+            p.expiry_date,
+            DATEDIFF(p.expiry_date, CURDATE()) as days_until_expiry,
+            DATEDIFF(CURDATE(), p.prescription_date) as days_since_creation,
+            p.status,
+            p.notes
+        FROM prescriptions p
+        JOIN users u ON p.doctor_id = u.id
+        WHERE p.child_id = ?
+        ORDER BY 
+            CASE 
+                WHEN p.status = 'active' THEN 0
+                ELSE 1
+            END,
+            p.expiry_date DESC
+    ");
+    $stmt_prescriptions->execute([$child_id]);
+    $prescriptions = $stmt_prescriptions->fetchAll();
+
+    // جلب أدوية الوصفات
+    $prescription_medications = [];
+    if (!empty($prescriptions)) {
+        $prescription_ids = array_column($prescriptions, 'id');
+        $placeholders = str_repeat('?,', count($prescription_ids) - 1) . '?';
+        $stmt_meds = $pdo->prepare("
+            SELECT 
+                pm.prescription_id,
+                m.name as medication_name,
+                pm.dosage,
+                pm.frequency,
+                pm.duration_days,
+                pm.notes as med_notes
+            FROM prescription_medications pm
+            JOIN medications m ON pm.medication_id = m.id
+            WHERE pm.prescription_id IN ($placeholders)
+            ORDER BY pm.prescription_id, m.name
+        ");
+        $stmt_meds->execute($prescription_ids);
+        $meds_result = $stmt_meds->fetchAll();
+        
+        // تجميع الأدوية حسب الوصفة
+        foreach ($meds_result as $med) {
+            $prescription_medications[$med['prescription_id']][] = $med;
+        }
+    }
+
     // جلب ملاحظات المهنيين
     $sql_notes = 'SELECT pn.*, u.full_name FROM professional_notes pn JOIN users u ON pn.user_id = u.id WHERE pn.child_id = ? ORDER BY pn.created_at DESC';
     $stmt_notes = $pdo->prepare($sql_notes);
@@ -130,6 +243,14 @@ try {
 
 } catch (PDOException $e) {
     $errors[] = 'خطأ في الاتصال بقاعدة البيانات: ' . $e->getMessage();
+    // احفظ المتغيرات الافتراضية في حالة الفشل
+    $daily_activities = $daily_activities ?? [];
+    $latest_activity = $latest_activity ?? null;
+    $growth_records = $growth_records ?? [];
+    $sleep_records = $sleep_records ?? [];
+    $professional_notes = $professional_notes ?? [];
+    $vaccine_status = $vaccine_status ?? [];
+    $nutrition_guideline = $nutrition_guideline ?? null;
 }
 
 // دالة لمعالجة إشعارات التطعيم (لجسم الصفحة)
@@ -252,7 +373,11 @@ $default_child_image = 'images/images.jpeg';
     </style>
 </head>
 <body>
-<?php include 'includes/sidebar.php'; ?>
+    <?php if ($_SESSION['user_type'] === 'doctor') {
+        include 'doctor/sidebar.php';
+    } else {
+        include 'includes/sidebar.php';
+    } ?>
 <div class="main-container">
     <div class="dashboard-container">
         <div class="row justify-content-center">
@@ -310,6 +435,14 @@ $default_child_image = 'images/images.jpeg';
                                 <p class="child-info-item"><i class="bi bi-rulers me-2"></i><strong>الطول الحالي:</strong> <?= htmlspecialchars($child['height']) ?> سم</p>
                             </div>
                         </div>
+                        <?php if (!empty($age_group_meds)): ?>
+                        <div class="alert alert-info mt-4">
+                            <strong><i class="bi bi-capsule"></i> قائمة الأدوية حسب الفئة العمرية (<?= $age_group_meds['age_min_months'] ?> - <?= $age_group_meds['age_max_months'] ?> شهر):</strong><br>
+                            <span class="text-success"><b>مسموح:</b> <?= nl2br(htmlspecialchars($age_group_meds['allowed_medications'])) ?></span><br>
+                            <span class="text-danger"><b>ممنوع:</b> <?= nl2br(htmlspecialchars($age_group_meds['restricted_medications'])) ?></span>
+                            <?php if (!empty($age_group_meds['notes'])): ?><br><span class="text-muted"><b>ملاحظات:</b> <?= nl2br(htmlspecialchars($age_group_meds['notes'])) ?></span><?php endif; ?>
+                        </div>
+                        <?php endif; ?>
                         <?php if ($user_type === 'parent'): ?>
                         <div class="mt-3">
                             <a href="edit_child.php?id=<?= $child['id'] ?>" class="btn btn-outline-info btn-sm me-2">
@@ -327,7 +460,10 @@ $default_child_image = 'images/images.jpeg';
                     <li class="nav-item" role="presentation"><button class="nav-link active" id="growth-tab" data-bs-toggle="tab" data-bs-target="#growth" type="button" role="tab"><i class="bi bi-graph-up-arrow"></i> النمو والنوم</button></li>
                     <li class="nav-item" role="presentation"><button class="nav-link" id="activities-tab" data-bs-toggle="tab" data-bs-target="#activities" type="button" role="tab"><i class="bi bi-list-check"></i> الأنشطة والسجلات</button></li>
                     <li class="nav-item" role="presentation"><button class="nav-link" id="notes-tab" data-bs-toggle="tab" data-bs-target="#notes" type="button" role="tab"><i class="bi bi-file-text"></i> ملاحظات المهنيين</button></li>
+                    <li class="nav-item" role="presentation"><button class="nav-link" id="nutrition-tab" data-bs-toggle="tab" data-bs-target="#nutrition" type="button" role="tab"><i class="bi bi-basket3"></i> التغذية</button></li>
                     <li class="nav-item" role="presentation"><button class="nav-link" id="vaccines-tab" data-bs-toggle="tab" data-bs-target="#vaccines" type="button" role="tab"><i class="bi bi-shield-plus"></i> التطعيمات</button></li>
+                    <li class="nav-item" role="presentation"><button class="nav-link" id="medications-tab" data-bs-toggle="tab" data-bs-target="#medications" type="button" role="tab"><i class="bi bi-capsule"></i> تذكيرات الأدوية</button></li>
+                    <li class="nav-item" role="presentation"><button class="nav-link" id="prescriptions-tab" data-bs-toggle="tab" data-bs-target="#prescriptions" type="button" role="tab"><i class="bi bi-prescription"></i> الوصفات الطبية</button></li>
                 </ul>
                 
                 <div class="tab-content pt-3" id="childTabsContent">
@@ -364,6 +500,48 @@ $default_child_image = 'images/images.jpeg';
                             </div>
                         <?php else: ?>
                             <div class="alert alert-no-data text-center mt-3"><i class="bi bi-info-circle-fill me-2"></i> لا توجد بيانات نوم مسجلة لعرضها في المخطط.</div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="tab-pane fade" id="medications" role="tabpanel">
+                        <h4 class="chart-section-title"><i class="bi bi-capsule"></i> تذكيرات الأدوية</h4>
+                        <?php if (in_array($user_type, ['doctor', 'nurse'])): ?>
+                        <div class="mb-3 text-end">
+                            <a href="add_child_medication_reminder.php?child_id=<?= $child['id'] ?>" class="btn btn-outline-success">
+                                <i class="bi bi-plus-circle"></i> إضافة تذكير دواء جديد
+                            </a>
+                        </div>
+                        <?php endif; ?>
+                        <?php if (!empty($medication_reminders)): ?>
+                            <table class="table table-bordered table-striped">
+                                <thead class="table-info">
+                                    <tr>
+                                        <th>اسم الدواء</th>
+                                        <th>الجرعة</th>
+                                        <th>وقت التذكير</th>
+                                        <th>ملاحظات</th>
+                                        <th>الحالة</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($medication_reminders as $rem): ?>
+                                    <tr>
+                                        <td><?= htmlspecialchars($rem['medication_name']) ?></td>
+                                        <td><?= htmlspecialchars($rem['dosage']) ?></td>
+                                        <td><?= htmlspecialchars(date('Y-m-d H:i', strtotime($rem['reminder_time']))) ?></td>
+                                        <td><?= htmlspecialchars($rem['notes'] ?? '---') ?></td>
+                                        <td>
+                                            <?php if ($rem['status'] === 'pending'): ?><span class="badge bg-warning text-dark">قيد الانتظار</span>
+                                            <?php elseif ($rem['status'] === 'sent'): ?><span class="badge bg-info text-dark">تم الإرسال</span>
+                                            <?php elseif ($rem['status'] === 'completed'): ?><span class="badge bg-success">تم التنفيذ</span>
+                                            <?php elseif ($rem['status'] === 'skipped'): ?><span class="badge bg-secondary">تم التجاوز</span>
+                                            <?php endif; ?>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        <?php else: ?>
+                            <div class="alert alert-info text-center mt-3"><i class="bi bi-info-circle-fill me-2"></i> لا توجد تذكيرات أدوية مسجلة لهذا الطفل.</div>
                         <?php endif; ?>
                     </div>
 
@@ -444,6 +622,22 @@ $default_child_image = 'images/images.jpeg';
                             <div class="alert alert-info text-center mt-3"><i class="bi bi-info-circle-fill me-2"></i> لا توجد ملاحظات مهنية مسجلة لهذا الطفل بعد.</div>
                         <?php endif; ?>
                     </div>
+
+                    <div class="tab-pane fade" id="nutrition" role="tabpanel">
+                        <h4 class="chart-section-title"><i class="bi bi-basket3-fill"></i> خطة التغذية حسب العمر</h4>
+                        <?php if ($nutrition_guideline): ?>
+                            <div class="card mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title">المرحلة: <?= htmlspecialchars($nutrition_guideline['age_min_months']) ?>-<?= htmlspecialchars($nutrition_guideline['age_max_months']) ?> شهور</h5>
+                                    <p><strong>الأطعمة المسموحة:</strong> <?= nl2br(htmlspecialchars($nutrition_guideline['allowed_foods'])) ?></p>
+                                    <p><strong>الأطعمة الممنوعة:</strong> <?= nl2br(htmlspecialchars($nutrition_guideline['restricted_foods'])) ?></p>
+                                    <p><strong>نصائح:</strong> <?= nl2br(htmlspecialchars($nutrition_guideline['nutrition_tips'])) ?></p>
+                                </div>
+                            </div>
+                        <?php else: ?>
+                            <div class="alert alert-info">لا توجد توجيهات تغذية محددة لهذا العمر حتى الآن. يمكنك مراجعة الطبيب لتحديث خطة التغذية.</div>
+                        <?php endif; ?>
+                    </div>
                     
                     <div class="tab-pane fade" id="vaccines" role="tabpanel">
                         <h4 class="chart-section-title"><i class="bi bi-shield-fill"></i> جدول التطعيمات</h4>
@@ -494,9 +688,120 @@ $default_child_image = 'images/images.jpeg';
                             <div class="alert alert-info text-center mt-3"><i class="bi bi-info-circle-fill me-2"></i> لا يوجد سجل تطعيمات لهذا الطفل.</div>
                         <?php endif; ?>
                     </div>
+
+                    <div class="tab-pane fade" id="prescriptions" role="tabpanel">
+                        <h4 class="chart-section-title"><i class="bi bi-prescription"></i> الوصفات الطبية</h4>
+                        <?php if (in_array($user_type, ['doctor', 'nurse'])): ?>
+                        <div class="mb-3 text-end">
+                            <a href="add_prescription.php?child_id=<?= $child['id'] ?>" class="btn btn-outline-success">
+                                <i class="bi bi-plus-circle"></i> وصفة جديدة
+                            </a>
+                        </div>
+                        <?php endif; ?>
+                        <?php if (!empty($prescriptions)): ?>
+                            <div class="row g-3">
+                                <?php foreach ($prescriptions as $prescription): ?>
+                                    <?php
+                                    $class = '';
+                                    $badge_class = '';
+                                    $status_text = '';
+
+                                    if ($prescription['status'] === 'active') {
+                                        if ($prescription['days_until_expiry'] < 0) {
+                                            $class = 'border-danger';
+                                            $badge_class = 'bg-danger';
+                                            $status_text = '❌ منتهية الصلاحية';
+                                        } elseif ($prescription['days_until_expiry'] <= 1) {
+                                            $class = 'border-danger';
+                                            $badge_class = 'bg-danger';
+                                            $status_text = '🔴 عاجل - ستنتهي اليوم!';
+                                        } elseif ($prescription['days_until_expiry'] <= 7) {
+                                            $class = 'border-warning';
+                                            $badge_class = 'bg-warning text-dark';
+                                            $status_text = '⚠️ قريبة الانتهاء';
+                                        } else {
+                                            $badge_class = 'bg-success';
+                                            $status_text = '✅ نشطة';
+                                        }
+                                    } else {
+                                        $badge_class = 'bg-secondary';
+                                        $status_text = 'ملغاة';
+                                    }
+                                    ?>
+                                    <div class="col-md-6">
+                                        <div class="card activity-card h-100 <?= $class ?>">
+                                            <div class="card-body">
+                                                <div class="d-flex justify-content-between align-items-start mb-3">
+                                                    <h5 class="card-title text-primary"><i class="bi bi-prescription me-2"></i> وصفة من د. <?= htmlspecialchars($prescription['doctor_name']) ?></h5>
+                                                    <span class="badge <?= $badge_class ?>"><?= $status_text ?></span>
+                                                </div>
+
+                                                <div class="row mb-3">
+                                                    <div class="col-6">
+                                                        <p class="card-text mb-1"><strong><i class="bi bi-calendar-event me-1"></i> تاريخ الكتابة:</strong></p>
+                                                        <p class="text-muted small"><?= htmlspecialchars(date('d/m/Y', strtotime($prescription['prescription_date']))) ?></p>
+                                                    </div>
+                                                    <div class="col-6">
+                                                        <p class="card-text mb-1"><strong><i class="bi bi-calendar-x me-1"></i> تاريخ الانتهاء:</strong></p>
+                                                        <p class="text-muted small"><?= htmlspecialchars(date('d/m/Y', strtotime($prescription['expiry_date']))) ?></p>
+                                                    </div>
+                                                </div>
+
+                                                <?php if (!empty($prescription_medications[$prescription['id']])): ?>
+                                                <div class="mb-3">
+                                                    <h6 class="text-primary mb-2"><i class="bi bi-capsule me-1"></i> الأدوية الموصوفة:</h6>
+                                                    <ul class="list-group list-group-flush">
+                                                        <?php foreach ($prescription_medications[$prescription['id']] as $med): ?>
+                                                        <li class="list-group-item px-0 py-2">
+                                                            <strong><?= htmlspecialchars($med['medication_name']) ?></strong>
+                                                            <br><small class="text-muted">
+                                                                الجرعة: <?= htmlspecialchars($med['dosage']) ?> |
+                                                                المرات: <?= htmlspecialchars($med['frequency']) ?>
+                                                                <?php if ($med['duration_days']): ?>| المدة: <?= htmlspecialchars($med['duration_days']) ?> يوم<?php endif; ?>
+                                                            </small>
+                                                            <?php if (!empty($med['med_notes'])): ?>
+                                                            <br><small class="text-info">ملاحظة: <?= htmlspecialchars($med['med_notes']) ?></small>
+                                                            <?php endif; ?>
+                                                        </li>
+                                                        <?php endforeach; ?>
+                                                    </ul>
+                                                </div>
+                                                <?php endif; ?>
+
+                                                <?php if (!empty($prescription['notes'])): ?>
+                                                <div class="alert alert-light border">
+                                                    <strong><i class="bi bi-chat-text me-1"></i> ملاحظات الطبيب:</strong><br>
+                                                    <?= nl2br(htmlspecialchars($prescription['notes'])) ?>
+                                                </div>
+                                                <?php endif; ?>
+
+                                                <div class="text-end">
+                                                    <a href="prescription_details.php?id=<?= $prescription['id'] ?>&child_id=<?= $child['id'] ?>" class="btn btn-sm btn-outline-primary">
+                                                        <i class="bi bi-eye"></i> عرض التفاصيل
+                                                    </a>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php else: ?>
+                            <div class="alert alert-info text-center mt-3"><i class="bi bi-info-circle-fill me-2"></i> لا توجد وصفات طبية مسجلة لهذا الطفل.</div>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <div class="text-center mt-4 pt-3 border-top">
-                    <a href="children.php" class="btn btn-secondary btn-sm"> 
+                    <a href="<?php 
+                        if ($user_type === 'doctor') {
+                            echo 'doctor/patients.php';
+                        } elseif ($user_type === 'admin') {
+                            echo 'admin/children.php';
+                        } elseif ($user_type === 'nurse') {
+                            echo 'nurse_dashboard.php';
+                        } else {
+                            echo 'children.php';
+                        }
+                    ?>" class="btn btn-secondary btn-sm"> 
                         <i class="bi bi-arrow-right-circle me-1"></i> العودة إلى قائمة الأطفال
                     </a>
                 </div>

@@ -20,7 +20,7 @@ $children = [];
 $user_type = $_SESSION['user_type'] ?? 'parent';
 $search_term = $_GET['search'] ?? '';
 
-// مسار الصورة الافتراضية
+// default image path
 $default_child_image = 'images/images.jpeg'; 
 
 // === START Sidebar Setup (Color and Links) ===
@@ -50,7 +50,7 @@ if ($user_type === 'doctor') {
 }
 // === END Sidebar Setup ===
 
-// دالة لمعالجة إشعارات التطعيم (مطلوبة للجانب الأيمن)
+// Function to handle vaccination notifications (required for the right side)
 function get_parent_alerts($due_vaccines) {
     $alerts = ['upcoming' => [], 'missed' => []];
     $today = new DateTime();
@@ -72,7 +72,7 @@ function get_parent_alerts($due_vaccines) {
 try {
     $pdo = new PDO($dsn, $user, $pass, $options);
     
-    // جلب معلومات التطعيمات للأطفال (لأجل تنبيهات الشريط الجانبي)
+    // Retrieve vaccination information for children (for sidebar alerts)
     $due_vaccines = [];
     if ($user_type === 'parent') {
         $stmt_vaccines_sidebar = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
@@ -81,7 +81,7 @@ try {
     }
     $vaccine_alerts_sidebar = $user_type === 'parent' ? get_parent_alerts($due_vaccines) : ['upcoming' => [], 'missed' => []];
 
-    // جلب قائمة الأطفال
+    // Bring the children's list
     $sql = 'SELECT * FROM children ';
     $params = [];
     $where_clauses = ['is_archived = 0']; // MODIFICATION: Filter out archived children
@@ -246,6 +246,9 @@ if ($user_type === 'nurse') {
                                         <div class="info-line"><i class="bi bi-graph-up"></i> العمر: <?= htmlspecialchars($child['age']) ?></div>
                                         <div class="info-line"><i class="bi bi-bar-chart"></i> الوزن: <?= htmlspecialchars($child['weight']) ?> كغ</div>
                                         <div class="info-line"><i class="bi bi-arrows-collapse"></i> الطول: <?= htmlspecialchars($child['height']) ?> سم</div>
+                                        <?php if (!empty($child['twin_group'])): ?>
+                                            <div class="info-line text-warning"><i class="bi bi-people-fill"></i> توأم - مجموعة: <?= htmlspecialchars($child['twin_group']) ?></div>
+                                        <?php endif; ?>
                                         
                                         <div class="mt-4 d-flex justify-content-center gap-2">
                                             <a href="child_details.php?id=<?= $child['id'] ?>" class="btn btn-outline-primary btn-sm"><i class="bi bi-eye"></i> عرض التفاصيل</a>

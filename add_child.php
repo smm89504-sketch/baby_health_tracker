@@ -20,11 +20,13 @@ $success = false;
 
 $name = '';
 $birth_date = '';
-$age = ''; // تم إزالة هذه الحقول من النموذج لكنها بقيت هنا للتحقق
+$twin_group = '';
+$age = ''; //  هنا للتحقق
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $name = trim($_POST['name'] ?? '');
     $birth_date = $_POST['birth_date'] ?? '';
+    $twin_group = trim($_POST['twin_group'] ?? '');
     
     // تم إزالة Age, Weight, Height من النموذج، لكن تبقى التحقق من الاسم وتاريخ الميلاد
     if (!$name || !$birth_date) {
@@ -36,12 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $pdo = new PDO($dsn, $user, $pass, $options);
             
-            // تم تعديل الاستعلام لحذف حقول الوزن والطول والعمر
-            $stmt = $pdo->prepare('INSERT INTO children (user_id, name, birth_date, age, weight, height) VALUES (?, ?, ?, ?, ?, ?)');
+            // to remove the weight, height, and age fields.
+            $stmt = $pdo->prepare('INSERT INTO children (user_id, name, birth_date, age, weight, height, twin_group, nutrition_guideline_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
             
             // يتم تعيين قيم افتراضية مؤقتة للحقول التي تم إزالتها لتجنب الخطأ لحين تحديثها في أول تسجيل نشاط
             $default_age = 'غير محدد';
             $default_float = 0.0;
+            $default_group = $twin_group ?: null;
             
             $stmt->execute([
                 $_SESSION['user_id'],
@@ -49,14 +52,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $birth_date,
                 $default_age,
                 $default_float,
-                $default_float
+                $default_float,
+                $default_group,
+                null
             ]);
+            $child_id = $pdo->lastInsertId();
+
+            // إضافة جدولة اللقاحات تلقائياً
+            $stmt_schedule = $pdo->prepare('SELECT * FROM vaccine_schedule');
+            $stmt_schedule->execute();
+            $vaccines = $stmt_schedule->fetchAll();
+
+            foreach ($vaccines as $vaccine) {
+                $due_date = date('Y-m-d', strtotime($birth_date . ' +' . $vaccine['age_months'] . ' months'));
+            $stmt_cv = $pdo->prepare('INSERT INTO child_vaccines (child_id, vaccine_id, vaccine_schedule_id, due_date, status) VALUES (?, ?, ?, ?, ?)');
+            $stmt_cv->execute([$child_id, $vaccine['id'], $vaccine['id'], $due_date, 'due']);
+            }
+
             $success = true;
           
             $name = $birth_date = '';
         } catch (PDOException $e) {
-            
-            $errors[] = 'حدث خطأ أثناء محاولة إضافة الطفل. يرجى المحاولة مرة أخرى.';
+            // عرض الخطأ الفعلي للتشخيص
+            $errors[] = 'حدث خطأ أثناء محاولة إضافة الطفل: ' . $e->getMessage();
         }
     }
 }
@@ -221,6 +239,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         <div class="mb-3">
                             <label for="birth_date" class="form-label">تاريخ الميلاد</label>
                             <input type="date" name="birth_date" id="birth_date" class="form-control" value="<?= htmlspecialchars($birth_date) ?>" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="twin_group" class="form-label">مجموعة التوائم (اختياري)</label>
+                            <input type="text" name="twin_group" id="twin_group" class="form-control" value="<?= htmlspecialchars($twin_group) ?>" placeholder="مثلاً: TWINS-001">
+                            <small class="form-text text-muted">أدخل رمزاً مشتركاً إذا كان الطفل توأماً لتسهيل المقارنة لاحقاً.</small>
                         </div>
                         
                         <div class="alert alert-info mt-4">

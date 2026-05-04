@@ -47,7 +47,7 @@ if ($user_type === 'doctor') {
     $title_icon = 'fas fa-heartbeat';
 }
 
-// دالة لمعالجة إشعارات التطعيم (مطلوبة للجانب الأيمن)
+// Function to handle vaccination notifications (required for the right side)
 function get_parent_alerts($due_vaccines) {
     $alerts = ['upcoming' => [], 'missed' => []];
     $today = new DateTime();
@@ -64,6 +64,106 @@ function get_parent_alerts($due_vaccines) {
     }
     return $alerts;
 }
+
+// تطبيق معايير النمو بناءً على جدول growth_standards
+function parseAgeToMonths($ageText) {
+    $ageText = trim(mb_strtolower($ageText));
+    $months = 0.0;
+    $days = 0.0;
+
+    if (preg_match('/([\d\.]+)\s*(?:أشهر|شهور|months?)/u', $ageText, $m)) {
+        $months = floatval($m[1]);
+    }
+    if (preg_match('/([\d\.]+)\s*(?:أيام|يوم|days?)/u', $ageText, $m)) {
+        $days = floatval($m[1]);
+    }
+    if ($months === 0.0 && preg_match('/^([\d\.]+)/u', $ageText, $m)) {
+        $months = floatval($m[1]);
+    }
+
+    $totalMonths = $months + ($days / 30.0);
+    return (int) round(max(0, $totalMonths));
+}
+
+function getGrowthStandard($pdo, $age_months) {
+    $age_months = max(0, (int) $age_months);
+    $stmt = $pdo->prepare('SELECT * FROM growth_standards WHERE age_months = ? LIMIT 1');
+    $stmt->execute([$age_months]);
+    $row = $stmt->fetch();
+    if ($row) {
+        return $row;
+    }
+
+    $stmtLow = $pdo->prepare('SELECT * FROM growth_standards WHERE age_months <= ? ORDER BY age_months DESC LIMIT 1');
+    $stmtLow->execute([$age_months]);
+    $low = $stmtLow->fetch();
+
+    $stmtHigh = $pdo->prepare('SELECT * FROM growth_standards WHERE age_months >= ? ORDER BY age_months ASC LIMIT 1');
+    $stmtHigh->execute([$age_months]);
+    $high = $stmtHigh->fetch();
+
+    if (!$low && !$high) {
+        return null;
+    }
+    if (!$low) {
+        return $high;
+    }
+    if (!$high) {
+        return $low;
+    }
+    if ($low['age_months'] === $high['age_months']) {
+        return $low;
+    }
+
+    $ratio = ($age_months - $low['age_months']) / max(1, $high['age_months'] - $low['age_months']);
+    $interp = [];
+    foreach (['avg_weight_kg', 'weight_upper_percentile_kg', 'weight_lower_percentile_kg', 'avg_height_cm', 'height_upper_percentile_cm', 'height_lower_percentile_cm'] as $key) {
+        $lowVal = floatval($low[$key]);
+        $highVal = floatval($high[$key]);
+        $interp[$key] = $lowVal + ($highVal - $lowVal) * $ratio;
+    }
+    return $interp;
+}
+
+function computePercentileValue($value, $lower, $avg, $upper) {
+    $value = floatval($value);
+    $lower = floatval($lower);
+    $avg = floatval($avg);
+    $upper = floatval($upper);
+
+    if ($value <= $lower) {
+        return 1;
+    }
+    if ($value >= $upper) {
+        return 99;
+    }
+    if ($value <= $avg) {
+        $span = max(0.0001, $avg - $lower);
+        return round(1 + 49 * ($value - $lower) / $span);
+    }
+    $span = max(0.0001, $upper - $avg);
+    return round(50 + 49 * ($value - $avg) / $span);
+}
+
+function calculateWHOGrowthPercentile($pdo, $age_months, $weight, $height) {
+    $standard = getGrowthStandard($pdo, $age_months);
+    if (!$standard) {
+        return null;
+    }
+
+    $weightPercentile = computePercentileValue($weight, $standard['weight_lower_percentile_kg'], $standard['avg_weight_kg'], $standard['weight_upper_percentile_kg']);
+    $heightPercentile = computePercentileValue($height, $standard['height_lower_percentile_cm'], $standard['avg_height_cm'], $standard['height_upper_percentile_cm']);
+
+    return (int) round(($weightPercentile + $heightPercentile) / 2);
+}
+
+function getLastDoctorForChild($pdo, $child_id) {
+    $stmt = $pdo->prepare('SELECT doctor_id FROM medical_visits WHERE child_id = ? AND doctor_id IS NOT NULL ORDER BY visit_date DESC LIMIT 1');
+    $stmt->execute([$child_id]);
+    $row = $stmt->fetch();
+    return $row ? $row['doctor_id'] : null;
+}
+
 // === END Sidebar Setup ===
 
 try {
@@ -73,7 +173,7 @@ try {
     $stmt_children->execute([$_SESSION['user_id']]);
     $children = $stmt_children->fetchAll();
     
-    // جلب معلومات التطعيمات للأطفال (لأجل تنبيهات الشريط الجانبي)
+    // Retrieve vaccination information for children (for sidebar alerts)
     $due_vaccines = [];
     if ($user_type === 'parent') {
         $stmt_vaccines_sidebar = $pdo->prepare('SELECT cv.*, v.name as vaccine_name, c.name as child_name FROM child_vaccines cv JOIN vaccines v ON cv.vaccine_id = v.id JOIN children c ON cv.child_id = c.id WHERE c.user_id = ? AND cv.status = "due" ORDER BY cv.due_date ASC');
@@ -132,23 +232,66 @@ try {
                 case 'growth_record':
                     $weight = $_POST['weight'] ?? null;
                     $height = $_POST['height'] ?? null;
+                    $head_circ = $_POST['head_circumference'] ?? null;
                     $temperature = $_POST['temperature'] ?? null;
                     $illness = trim($_POST['illness'] ?? '');
                     $age = trim($_POST['age'] ?? '');
                     
                     if (!$weight || !$height || !$age) { $errors[] = 'حقول الوزن، الطول والعمر مطلوبة لتسجيل النمو.'; break; }
 
+                    $age_months = parseAgeToMonths($age);
+                    $bmi = 0;
+                    if ($height > 0) {
+                        $bmi = round($weight / pow(($height / 100), 2), 2);
+                    }
+
+                    $growthPercentile = calculateWHOGrowthPercentile($pdo, $age_months, $weight, $height);
+
+                    $weightStatus = $growthPercentile >= 50 ? 'طبيعي إلى ممتاز' : ($growthPercentile >= 10 ? 'مقبول' : 'تحذير: ناقص وزن');
+                    $heightStatus = $growthPercentile >= 50 ? 'طبيعي إلى ممتاز' : ($growthPercentile >= 10 ? 'مقبول' : 'تحذير: قصر نمو');
+                    $growthAnalysis = "الطفل في المركز $growthPercentile٪. الوزن: $weightStatus. الطول: $heightStatus.";
+
                     // 1. تحديث البيانات الأساسية للطفل
                     $stmt_update_child = $pdo->prepare('UPDATE children SET age = ?, weight = ?, height = ? WHERE id = ? AND user_id = ?');
                     $stmt_update_child->execute([$age, $weight, $height, $child_id, $_SESSION['user_id']]);
-                    
-                    // 2. إدخال سجل النمو كنشاط
+
+                    // 2. سجل النمو في جدول growth_measurements (للوصول إليها في مخططات النمو)
+                    $stmt_growth = $pdo->prepare('INSERT INTO growth_measurements (child_id, doctor_id, age_months, weight_kg, height_cm, head_circumference_cm, bmi, growth_percentile, measurement_date, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+
+                    if ($_SESSION['user_type'] === 'doctor') {
+                        $doctor_id = $_SESSION['user_id'];
+                    } else {
+                        // الربط بطبيب آخر تلقائياً إذا ادخل الوالد القياسات
+                        $doctor_id = getLastDoctorForChild($pdo, $child_id);
+                    }
+
+                    $stmt_growth->execute([
+                        $child_id,
+                        $doctor_id,
+                        $age_months,
+                        $weight,
+                        $height,
+                        $head_circ,
+                        $bmi,
+                        $growthPercentile,
+                        $date,
+                        'تسجيل نمو تلقائي من النشاط اليومي'
+                    ]);
+
+                    // 3. إدخال سجل النشاط اليومي كما كان سابقاً
                     $stmt_insert = $pdo->prepare('INSERT INTO daily_activities (child_id, date, activity_type, weight, height, temperature, illness, medicine_name, medicine_dose, medicine_time, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
                     $data = [
-                        $child_id, $date, 'growth_record', $weight, $height, $temperature, $illness, 
+                        $child_id, $date, 'growth_record', $weight, $height, $temperature, $illness,
                         $_POST['medicine_name'] ?? null, $_POST['medicine_dose'] ?? null, $_POST['medicine_time'] ?? null, $_POST['note'] ?? null
                     ];
-                    $success_msg = 'تم تحديث بيانات النمو بنجاح.';
+                    $success_msg = 'تم تحديث بيانات النمو بنجاح.<br><strong>تقرير النمو:</strong><br>' .
+                        'العمر: ' . $age . ' (' . $age_months . ' أشهر)<br>' .
+                        'الوزن: ' . $weight . ' كجم<br>' .
+                        'الطول: ' . $height . ' سم<br>' .
+                        'مؤشر كتلة الجسم: ' . $bmi . '<br>' .
+                        'المئوية حسب منظمة الصحة العالمية: ' . ($growthPercentile !== null ? $growthPercentile . '%' : 'غير متوفرة') . '<br>' .
+                        '<strong>التحليل:</strong> ' . $growthAnalysis . '<br>' .
+                        ($growthPercentile >= 50 ? '<span style="color: green;">النمو طبيعي وممتاز!</span>' : ($growthPercentile >= 10 ? '<span style="color: orange;">النمو مقبول، استشر الطبيب إذا لزم الأمر.</span>' : '<span style="color: red;">تحذير: قد يكون هناك مشكلة في النمو، استشر الطبيب فوراً.</span>'));
                     break;
 
                 default:
@@ -172,8 +315,17 @@ try {
 $current_child_data = [];
 if ($child_id_form) {
     try {
-        $stmt_child = $pdo->prepare('SELECT * FROM children WHERE id = ? AND user_id = ?');
-        $stmt_child->execute([$child_id_form, $_SESSION['user_id']]);
+        // Allowing doctors and nurses access to all children
+        $query = 'SELECT * FROM children WHERE id = ?';
+        $params = [$child_id_form];
+        
+        if ($user_type === 'parent') {
+            $query .= ' AND user_id = ?';
+            $params[] = $_SESSION['user_id'];
+        }
+        
+        $stmt_child = $pdo->prepare($query);
+        $stmt_child->execute($params);
         $current_child_data = $stmt_child->fetch();
     } catch (\Throwable $th) {
         // Handle error
@@ -367,6 +519,10 @@ if ($child_id_form) {
                                     <div class="col-md-3">
                                         <label for="height_form" class="form-label">الطول (سم) <span class="text-danger">*</span></label>
                                         <input type="number" name="height" id="height_form" class="form-control" min="10" step="0.1" placeholder="مثال: 65" value="<?= htmlspecialchars($current_child_data['height'] ?? '') ?>">
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label for="head_circ_form" class="form-label">محيط الرأس (سم)</label>
+                                        <input type="number" name="head_circumference" id="head_circ_form" class="form-control" min="20" step="0.1" placeholder="مثال: 42">
                                     </div>
                                     <div class="col-md-3">
                                         <label for="temp_form" class="form-label">الحرارة (°م)</label>
